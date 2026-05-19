@@ -1,0 +1,70 @@
+# Build outputs
+debug/
+release/
+build/
+*.o
+*.obj
+*.exe
+*.res
+moc_*.cpp
+moc_*.h
+ui_*.h
+qrc_*.cpp
+Makefile
+Makefile.Debug
+Makefile.Release
+object_script.*
+.qmake.stash
+
+# Qt Creator
+*.pro.user
+*.pro.user.*
+
+# Backup files
+*_backup*/
+backup_*/
+*.bak
+*.bak_*
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
+排查日志/
+
+# Documentation / reference (keep key docs)
+参考文件/
+错误文档/
+提示词工程/
+
+# Dependencies (keep room/uiapi/ as it has source)
+# Ignore large binary/third-party directories
+audio/speex/
+
+# Internal
+.claude/
+tools/
+apply_fixes.py
+main_test.cpp
+房间逻辑/
+计划文档/
+音视频资料/
+ui_friendlist.h.current
+ui整改.txt
+aqtinstall.log
+
+# Sensitive
+.env
+credentials.*
+
+# macOS
+.DS_Store
+
+# Linux
+*.so
+*.o
+
+# Server binary
+server/bin/
