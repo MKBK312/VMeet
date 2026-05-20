@@ -1,17 +1,23 @@
 #include "video_capture.h"
+#include "face_detector.h"
 #include <QAbstractVideoBuffer>
 #include <QBuffer>
 #include <QCameraInfo>
 #include <QDebug>
+#include <QPainter>
+#include <QPen>
 
-VideoCapture::VideoCapture(QObject *parent) : QObject(parent), m_pCamera(nullptr), m_pProbe(nullptr)
+VideoCapture::VideoCapture(QObject *parent) : QObject(parent), m_pCamera(nullptr), m_pProbe(nullptr), m_pFaceDetector(nullptr)
 {
     qDebug() << __func__ << "available cameras:" << QCameraInfo::availableCameras().size();
+    m_pFaceDetector = new FaceDetector;
+    m_pFaceDetector->init();
 }
 
 VideoCapture::~VideoCapture()
 {
     stop();
+    delete m_pFaceDetector;
 }
 
 void VideoCapture::start()
@@ -85,15 +91,15 @@ void VideoCapture::slot_frameProbed(const QVideoFrame &frame)
 
                 int dx = x * 3;
                 // R = 1.164*(Y-16) + 1.596*(V-128)
-                dst[dx + 2] = qBound(0, (yv0 + 409 * v + 128) >> 8, 255);
+                dst[dx]     = qBound(0, (yv0 + 409 * v + 128) >> 8, 255);
                 // G = 1.164*(Y-16) - 0.813*(V-128) - 0.391*(U-128)
                 dst[dx + 1] = qBound(0, (yv0 - 100 * u - 208 * v + 128) >> 8, 255);
                 // B = 1.164*(Y-16) + 2.018*(U-128)
-                dst[dx]     = qBound(0, (yv0 + 516 * u + 128) >> 8, 255);
+                dst[dx + 2] = qBound(0, (yv0 + 516 * u + 128) >> 8, 255);
                 // Pixel 2
-                dst[dx + 5] = qBound(0, (yv1 + 409 * v + 128) >> 8, 255);
+                dst[dx + 3] = qBound(0, (yv1 + 409 * v + 128) >> 8, 255);
                 dst[dx + 4] = qBound(0, (yv1 - 100 * u - 208 * v + 128) >> 8, 255);
-                dst[dx + 3] = qBound(0, (yv1 + 516 * u + 128) >> 8, 255);
+                dst[dx + 5] = qBound(0, (yv1 + 516 * u + 128) >> 8, 255);
             }
             src += srcStride;
         }
@@ -114,12 +120,12 @@ void VideoCapture::slot_frameProbed(const QVideoFrame &frame)
                 int yv1 = (y1 - 16) * 298;
 
                 int dx = x * 3;
-                dst[dx + 2] = qBound(0, (yv0 + 409 * v + 128) >> 8, 255);
+                dst[dx]     = qBound(0, (yv0 + 409 * v + 128) >> 8, 255);
                 dst[dx + 1] = qBound(0, (yv0 - 100 * u - 208 * v + 128) >> 8, 255);
-                dst[dx]     = qBound(0, (yv0 + 516 * u + 128) >> 8, 255);
-                dst[dx + 5] = qBound(0, (yv1 + 409 * v + 128) >> 8, 255);
+                dst[dx + 2] = qBound(0, (yv0 + 516 * u + 128) >> 8, 255);
+                dst[dx + 3] = qBound(0, (yv1 + 409 * v + 128) >> 8, 255);
                 dst[dx + 4] = qBound(0, (yv1 - 100 * u - 208 * v + 128) >> 8, 255);
-                dst[dx + 3] = qBound(0, (yv1 + 516 * u + 128) >> 8, 255);
+                dst[dx + 5] = qBound(0, (yv1 + 516 * u + 128) >> 8, 255);
             }
             src += srcStride;
         }
@@ -131,6 +137,20 @@ void VideoCapture::slot_frameProbed(const QVideoFrame &frame)
     f.unmap();
 
     rgb = rgb.scaled(320, 240, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+
+    // Face detection
+    QVector<QRect> faces = m_pFaceDetector->detect(rgb);
+    qDebug() << __func__ << "faces detected:" << faces.size();
+    if (!faces.isEmpty()) {
+        QPainter painter(&rgb);
+        painter.setPen(QPen(Qt::green, 2));
+        for (const QRect& r : faces) {
+            painter.drawRect(r);
+        }
+        painter.end();
+    }
+
+    emit sig_rawFrameReady(rgb);
 
     QByteArray jpeg;
     QBuffer buf(&jpeg);

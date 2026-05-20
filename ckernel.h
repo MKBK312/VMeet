@@ -19,6 +19,10 @@ class Audio_Read;
 class Audio_Write;
 class VideoCapture;
 class ScreenCapture;
+class VideoEncoder;
+class VideoDecoder;
+class AudioEncoder;
+class AudioDecoder;
 
 class CKernel;
 //声明指向处理函数的指针
@@ -110,7 +114,7 @@ private slots://处理所有接收到的数据
     void slots_startRoomMedia(int roomId);
     void slots_stopRoomMedia();
     void slots_sendAudioFrame(QByteArray ba);
-    void slots_sendVideoFrame(QByteArray ba);
+    void slots_sendVideoFrame(QByteArray ba, bool displayLocally = true, bool isScreen = false);
     void slots_toggleMute(bool muted);
     void slots_toggleCamera(bool off);
     void slots_toggleScreenShare();
@@ -152,6 +156,10 @@ private:
     Audio_Write* m_pAudioWrite;
     VideoCapture* m_pVideoCapture;
     ScreenCapture* m_pScreenCapture;
+    VideoEncoder* m_pVideoEncoder;
+    VideoDecoder* m_pVideoDecoder;
+    AudioEncoder* m_pAudioEncoder;
+    AudioDecoder* m_pAudioDecoder;
     bool m_screenSharing;
     int m_mediaRoomId;
 };

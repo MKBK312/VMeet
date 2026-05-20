@@ -6,6 +6,7 @@
 #include <QTime>
 #include <QApplication>
 #include <QClipboard>
+#include <QTimer>
 
 friendList::friendList(QWidget *parent) :
     QDialog(parent),
@@ -628,9 +629,14 @@ void friendList::showRoomView(int roomId, int roomNumber, QString roomName, bool
 
     centerLay->addWidget(m_pRightPanel);
 
-    // Collapse button positioned absolutely
+    // Collapse button — drawer handle on LEFT edge of right panel
     m_pBtnCollapse->setParent(page);
-    m_pBtnCollapse->move(1252, 56);
+    QTimer::singleShot(0, [this]() {
+        if (m_pRightPanel && m_pBtnCollapse) {
+            int y = m_pRightPanel->y() + m_pRightPanel->height() / 2 - 30;
+            m_pBtnCollapse->move(m_pRightPanel->x(), y);
+        }
+    });
     m_pBtnCollapse->raise();
 
     root->addWidget(center, 1);
@@ -714,39 +720,60 @@ void friendList::displayRoomMessage(QString senderName, QString content)
     ui->tb_roomChat->append(content);
 }
 
-void friendList::displayVideoFrame(int userId, QByteArray jpegData)
+void friendList::displayVideoFrame(int userId, QByteArray jpegData, bool isScreen)
 {
     m_mapLastFrames[userId] = jpegData;
 
-    // Large frame (>20KB) → screen share detected, store separately
-    if (jpegData.size() > 20000) {
+    bool isEnlarged = (m_enlargedUserId == userId && m_pEnlargedOverlay && m_pEnlargedOverlay->isVisible());
+
+    if (isScreen) {
+        // Screen share frame → store separately, display as main content
         m_userHasScreen[userId] = true;
         m_mapLastScreenFrames[userId] = jpegData;
-    }
 
-    // Small frame → PIP when user is screen sharing
-    if (jpegData.size() < 15000 && m_userHasScreen.value(userId, false)) {
-        bool isEnlarged = (m_enlargedUserId == userId && m_pEnlargedOverlay && m_pEnlargedOverlay->isVisible());
         if (isEnlarged) {
-            // Update enlarged view PIP
-            QLabel* pip = m_pEnlargedOverlay->findChild<QLabel*>("enlargedPip");
-            if (!pip) { pip = new QLabel(m_pEnlargedOverlay); pip->setObjectName("enlargedPip");
-                pip->setFixedSize(240, 160); pip->setStyleSheet("QLabel{background:#12192B;border:2px solid #3B82F6;border-radius:8px;}"); }
-            QPixmap px; if (px.loadFromData(jpegData, "JPEG")) { pip->setPixmap(px.scaled(240, 160, Qt::KeepAspectRatio, Qt::SmoothTransformation));
-                pip->move(m_pEnlargedOverlay->width() - 248, 8); pip->raise(); pip->show(); }
-        } else {
-            showLocalPIP(userId, jpegData);
+            QPixmap pix;
+            if (pix.loadFromData(jpegData, "JPEG"))
+                m_pEnlargedVideo->setPixmap(pix.scaled(m_pEnlargedVideo->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
+            return;
         }
-        return;
+        // Fall through to grid display for screen
+    } else {
+        // Camera frame
+        if (m_userHasScreen.value(userId, false)) {
+            // User is screen sharing → show camera as PIP
+            if (isEnlarged) {
+                // Update enlarged view PIP continuously
+                QLabel* pip = m_pEnlargedOverlay->findChild<QLabel*>("enlargedPip");
+                if (!pip) {
+                    pip = new QLabel(m_pEnlargedOverlay);
+                    pip->setObjectName("enlargedPip");
+                    pip->setFixedSize(240, 160);
+                    pip->setStyleSheet("QLabel{background:#12192B;border:2px solid #3B82F6;border-radius:8px;}");
+                }
+                QPixmap px;
+                if (px.loadFromData(jpegData, "JPEG")) {
+                    pip->setPixmap(px.scaled(240, 160, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+                    pip->move(m_pEnlargedOverlay->width() - 248, 8);
+                    pip->raise();
+                    pip->show();
+                }
+            } else {
+                showLocalPIP(userId, jpegData);
+            }
+            return;
+        }
+
+        // Normal camera (no screen sharing) → show in grid/enlarged
+        if (isEnlarged) {
+            QPixmap pix;
+            if (pix.loadFromData(jpegData, "JPEG"))
+                m_pEnlargedVideo->setPixmap(pix.scaled(m_pEnlargedVideo->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
+            return;
+        }
     }
 
-    if (m_enlargedUserId == userId && m_pEnlargedVideo && m_pEnlargedOverlay && m_pEnlargedOverlay->isVisible()) {
-        QPixmap pix;
-        if (pix.loadFromData(jpegData, "JPEG"))
-            m_pEnlargedVideo->setPixmap(pix.scaled(m_pEnlargedVideo->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
-        return;
-    }
-
+    // ===== Grid display (both camera-only and screen share) =====
     if (!m_mapVideoLabels.contains(userId)) {
         // Container widget: video + name overlay
         QWidget* container = new QWidget(m_pVideoGridWidget ? (QWidget*)m_pVideoGridWidget : (QWidget*)this);
@@ -934,15 +961,57 @@ void friendList::slot_closeEnlarged()
 
 void friendList::slot_toggleChatPanel()
 {
-    if (!m_pRightPanel) return;
+    if (!m_pRightPanel || !m_pBtnCollapse) return;
     m_chatCollapsed = !m_chatCollapsed;
     m_pRightPanel->setVisible(!m_chatCollapsed);
     m_pBtnCollapse->setText(m_chatCollapsed ? "《" : "》");
-    // Update collapse button position
-    if (m_chatCollapsed)
-        m_pBtnCollapse->move(m_pVideoGridWidget ? m_pVideoGridWidget->width() - 28 : 1572, 56);
-    else
-        m_pBtnCollapse->move(1252, 56);
+
+    // Force layout recalculation so video grid fills the freed space
+    QWidget* center = m_pVideoGridWidget ? m_pVideoGridWidget->parentWidget() : nullptr;
+    if (center && center->layout()) {
+        center->layout()->invalidate();
+        center->layout()->activate();
+    }
+    if (m_pVideoGridWidget) {
+        m_pVideoGridWidget->updateGeometry();
+    }
+
+    // Delay positioning until layout reflow completes
+    QTimer::singleShot(0, [this]() {
+        if (!m_pBtnCollapse) return;
+        QWidget* page = m_pBtnCollapse->parentWidget();
+        if (!page) return;
+
+        if (m_chatCollapsed) {
+            // Panel hidden → handle at right edge of screen, vertically centered
+            int y = page->height() / 2 - 30;
+            m_pBtnCollapse->move(page->width() - 28, y);
+        } else {
+            // Panel visible → handle at left edge of panel, vertically centered
+            if (m_pRightPanel) {
+                int y = m_pRightPanel->y() + m_pRightPanel->height() / 2 - 30;
+                m_pBtnCollapse->move(m_pRightPanel->x(), y);
+            }
+        }
+        m_pBtnCollapse->raise();
+
+        // Update enlarged overlay to match new video grid size
+        if (m_pEnlargedOverlay && m_pEnlargedOverlay->isVisible() && m_pVideoGridWidget) {
+            m_pEnlargedOverlay->setGeometry(m_pVideoGridWidget->rect());
+            QLabel* pip = m_pEnlargedOverlay->findChild<QLabel*>("enlargedPip");
+            if (pip) pip->move(m_pEnlargedOverlay->width() - 248, 8);
+        }
+
+        // Reposition grid PIPs to new container size
+        for (auto it = m_mapVideoLabels.begin(); it != m_mapVideoLabels.end(); ++it) {
+            QWidget* container = it.value()->parentWidget();
+            if (container) {
+                QLabel* pip = container->findChild<QLabel*>("pipLabel");
+                if (pip && pip->isVisible())
+                    pip->move(container->width() - 128, 4);
+            }
+        }
+    });
 }
 
 // ===== Bottom Bar =====

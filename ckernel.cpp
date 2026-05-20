@@ -16,6 +16,11 @@
 #include"audio_write.h"
 #include"video/video_capture.h"
 #include"video/screen_capture.h"
+#include"video/video_encoder.h"
+#include"video/video_decoder.h"
+#include"audio/audio_encoder.h"
+#include"audio/audio_decoder.h"
+#include<QBuffer>
 using namespace std;
 CKernel::CKernel(QObject *parent) : QObject(parent)
 {
@@ -31,6 +36,10 @@ CKernel::CKernel(QObject *parent) : QObject(parent)
     m_pAudioWrite = nullptr;
     m_pVideoCapture = nullptr;
     m_pScreenCapture = nullptr;
+    m_pVideoEncoder = nullptr;
+    m_pVideoDecoder = nullptr;
+    m_pAudioEncoder = nullptr;
+    m_pAudioDecoder = nullptr;
     m_screenSharing = false;
     m_mediaRoomId = 0;
 
@@ -139,6 +148,10 @@ CKernel::~CKernel()
         if(chat) { chat->hide(); delete chat; }
         it = m_mapIdToChatDlg.erase(it);
     }
+    delete m_pVideoEncoder; m_pVideoEncoder = nullptr;
+    delete m_pVideoDecoder; m_pVideoDecoder = nullptr;
+    delete m_pAudioEncoder; m_pAudioEncoder = nullptr;
+    delete m_pAudioDecoder; m_pAudioDecoder = nullptr;
 }
 
 void CKernel::setProtocol()
@@ -896,7 +909,13 @@ void CKernel::dealAudioFrame(char *data, int len, unsigned long from)
     PROT_AUDIO_FRAME* frame = (PROT_AUDIO_FRAME*)data;
     if (frame->frameSize <= 0 || frame->frameSize > DEF_AUDIO_FRAME_SIZE) return;
     QByteArray ba(frame->data, frame->frameSize);
-    m_pAudioWrite->slot_net_rx(ba);
+
+    if (!m_pAudioDecoder) {
+        m_pAudioDecoder = new AudioDecoder(this);
+        connect(m_pAudioDecoder, &AudioDecoder::sig_decodedFrame,
+                m_pAudioWrite, &Audio_Write::slot_net_rx);
+    }
+    m_pAudioDecoder->decode(ba);
 }
 
 void CKernel::dealVideoFrame(char *data, int len, unsigned long from)
@@ -909,8 +928,20 @@ void CKernel::dealVideoFrame(char *data, int len, unsigned long from)
         qDebug() << "[DEBUG] dealVideoFrame CLEAR userId:" << frame->userId;
         m_pFriendList->clearVideoFrame(frame->userId);
     } else {
-        QByteArray jpeg(frame->data, frame->frameSize);
-        m_pFriendList->displayVideoFrame(frame->userId, jpeg);
+        QByteArray encoded(frame->data, frame->frameSize);
+
+        if (!m_pVideoDecoder) {
+            m_pVideoDecoder = new VideoDecoder(this);
+            connect(m_pVideoDecoder, &VideoDecoder::sig_decodedFrame, this,
+                [this](QImage img, int userId) {
+                    QByteArray jpeg;
+                    QBuffer buf(&jpeg);
+                    buf.open(QIODevice::WriteOnly);
+                    img.save(&buf, "JPEG", 70);
+                    m_pFriendList->displayVideoFrame(userId, jpeg);
+                });
+        }
+        m_pVideoDecoder->decode(encoded, frame->userId);
     }
 }
 
@@ -1261,9 +1292,16 @@ void CKernel::slots_startRoomMedia(int roomId)
     if (!m_pAudioRead) {
         qDebug() << "[DEBUG] creating Audio_Read";
         m_pAudioRead = new Audio_Read(this);
-        connect(m_pAudioRead, &Audio_Read::SIG_audioFrame,
+    }
+    if (!m_pAudioEncoder) {
+        m_pAudioEncoder = new AudioEncoder(this);
+        connect(m_pAudioEncoder, &AudioEncoder::sig_encodedFrame,
                 this, &CKernel::slots_sendAudioFrame);
     }
+    // Re-route: Audio_Read → AudioEncoder → send
+    disconnect(m_pAudioRead, &Audio_Read::SIG_audioFrame, this, &CKernel::slots_sendAudioFrame);
+    connect(m_pAudioRead, &Audio_Read::SIG_audioFrame,
+            m_pAudioEncoder, &AudioEncoder::encode);
     if (!m_pAudioWrite) {
         qDebug() << "[DEBUG] creating Audio_Write";
         m_pAudioWrite = new Audio_Write(this);
@@ -1271,18 +1309,31 @@ void CKernel::slots_startRoomMedia(int roomId)
     if (!m_pVideoCapture) {
         qDebug() << "[DEBUG] creating VideoCapture";
         m_pVideoCapture = new VideoCapture(this);
+        // Keep JPEG path for local preview
         connect(m_pVideoCapture, &VideoCapture::sig_videoFrameReady, this, [this](QByteArray ba) {
             if (!m_mediaRoomId || ba.isEmpty()) return;
-            // Camera always sends to server (participants can see)
-            // Receiver distinguishes PIP vs main by frame size
             slots_sendVideoFrame(ba);
         });
     }
+    if (!m_pVideoEncoder) {
+        m_pVideoEncoder = new VideoEncoder(this);
+        // H.264 encoded frames → network only (not JPEG, can't display locally)
+        connect(m_pVideoEncoder, &VideoEncoder::sig_encodedFrame, this, [this](QByteArray ba) {
+            if (!m_mediaRoomId || ba.isEmpty()) return;
+            slots_sendVideoFrame(ba, false, false);
+        });
+    }
+    // Route raw frames through H.264 encoder → send
+    connect(m_pVideoCapture, &VideoCapture::sig_rawFrameReady,
+            m_pVideoEncoder, &VideoEncoder::encode);
     if (!m_pScreenCapture) {
         qDebug() << "[DEBUG] creating ScreenCapture";
         m_pScreenCapture = new ScreenCapture(this);
-        connect(m_pScreenCapture, &ScreenCapture::sig_screenFrameReady,
-                this, &CKernel::slots_sendVideoFrame);
+        // Screen frames → display locally as screen (isScreen=true)
+        connect(m_pScreenCapture, &ScreenCapture::sig_screenFrameReady, this, [this](QByteArray ba) {
+            if (!m_mediaRoomId || ba.isEmpty()) return;
+            slots_sendVideoFrame(ba, true, true);
+        });
     }
     qDebug() << "[DEBUG] slots_startRoomMedia DONE";
 }
@@ -1308,7 +1359,7 @@ void CKernel::slots_sendAudioFrame(QByteArray ba)
     m_pMediator->sendData((char*)&frame, sizeof(frame), 89);
 }
 
-void CKernel::slots_sendVideoFrame(QByteArray ba)
+void CKernel::slots_sendVideoFrame(QByteArray ba, bool displayLocally, bool isScreen)
 {
     if (m_mediaRoomId == 0) return;
     if (ba.size() > DEF_VIDEO_FRAME_SIZE) return;
@@ -1321,7 +1372,8 @@ void CKernel::slots_sendVideoFrame(QByteArray ba)
         memset(frame.data, 0, DEF_VIDEO_FRAME_SIZE);
         m_pMediator->sendData((char*)&frame, sizeof(frame), 89);
     } else {
-        m_pFriendList->displayVideoFrame(m_id, ba);
+        if (displayLocally)
+            m_pFriendList->displayVideoFrame(m_id, ba, isScreen);
         PROT_VIDEO_FRAME frame;
         frame.userId = m_id;
         frame.roomId = m_mediaRoomId;

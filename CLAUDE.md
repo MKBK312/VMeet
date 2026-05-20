@@ -4,17 +4,27 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Build Commands
 
-**Client (Windows 11, Qt 5.15.2 MinGW 8.1.0 64-bit):**
+**Client (Windows 11, Qt 5.15.2 MinGW 8.1.0 32-bit):**
 ```bash
-# Recommended: build from Qt Creator (avoids MinGW version mismatch)
+# Recommended: build from Qt Creator
 # Qt Creator: E:\Qt\Tools\QtCreator\bin\qtcreator.exe
+# Select kit: "Desktop Qt 5.15.2 MinGW 32-bit"
 
-# Command line (must force correct MinGW 8.1.0 — system PATH may resolve to incompatible 15.1.0):
-E:\Qt\5.15.2\mingw81_64\bin\qmake.exe IMClient.pro
-mingw32-make -j4 CC="E:/Qt/Tools/mingw810_64/bin/gcc" CXX="E:/Qt/Tools/mingw810_64/bin/g++"
+# Command line (system has multiple MinGW that conflict — use clean env):
+MINGW_BIN="E:/Qt/Tools/mingw810_32/bin"
+MINGW_LIBEXEC="E:/Qt/Tools/mingw810_32/libexec/gcc/i686-w64-mingw32/8.1.0"
+env -i PATH="$MINGW_BIN:$MINGW_LIBEXEC:/usr/bin:/bin" HOME="$HOME" TEMP="$TEMP" \
+  "E:/Qt/5.15.2/mingw81_32/bin/qmake.exe" IMClient.pro
+# qmake puts literal "g++" in Makefile — patch to use full path:
+sed -i 's|^CXX .*|CXX           = E:/Qt/Tools/mingw810_32/bin/g++|' Makefile.Release
+sed -i 's|^LINKER .*|LINKER      = E:/Qt/Tools/mingw810_32/bin/g++|' Makefile.Release
+sed -i 's|^\tg++|\t$(CXX)|' Makefile.Release  # fix moc_predefs.h rule
+env -i PATH="$MINGW_BIN:$MINGW_LIBEXEC:/usr/bin:/bin" HOME="$HOME" TEMP="$TEMP" \
+  E:/Qt/Tools/mingw810_32/bin/mingw32-make -j4 -f Makefile.Release
 ```
 - Output: `release/IMClient.exe` or `debug/IMClient.exe`
 - Requires `-lWs2_32` (Winsock2)
+- **IMPORTANT**: All third-party DLLs (libfacedetection, FFmpeg) are 32-bit. Do NOT use 64-bit toolchain.
 
 **Server (Linux VM, g++):**
 ```bash
@@ -72,7 +82,7 @@ TcpClientMediator → TCPClient (raw Winsock2 socket)
 
 ## Critical Gotchas
 
-1. **MinGW version mismatch:** bash on Windows PATH splitting on `:` breaks Windows drive letters. System MinGW 15.1.0 is ABI-incompatible with Qt's MinGW 8.1.0. Always override CC/CXX when building from command line, or use Qt Creator.
+1. **MinGW version mismatch:** The system has MinGW 15.1.0 64-bit on PATH which is ABI-incompatible with Qt's MinGW 8.1.0 32-bit. Always build from Qt Creator or use a wrapper script that sanitizes PATH. The DLLs (libfacedetection, FFmpeg) are 32-bit — do NOT attempt 64-bit builds.
 2. **Port was wrong:** Original code used port 67890 (>65535). Fixed to 6789. Both sides must agree.
 3. **Protocol struct alignment:** Server and client `def.h` must define structs identically. Any field order, type, or padding difference breaks communication.
 4. **`strcpy_s` on GB2312:** GB2312-encoded strings from `Utf8Togb2312` can contain embedded null bytes that truncate with strcpy_s. Use `memcpy` + manual null termination for chat content fields.

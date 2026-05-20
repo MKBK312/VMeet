@@ -58,7 +58,7 @@ public:
     void showRoomView(int roomId, int roomNumber, QString roomName, bool isCreator = false);
     void showRoomLobby();
     void displayRoomMessage(QString senderName, QString content);
-    void displayVideoFrame(int userId, QByteArray jpegData);
+    void displayVideoFrame(int userId, QByteArray jpegData, bool isScreen = false);
     void clearVideoFrame(int userId);
     void showLocalPIP(int userId, QByteArray jpegData);
     int getCurrentRoomId() const { return m_currentRoomId; }
